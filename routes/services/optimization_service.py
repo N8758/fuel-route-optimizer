@@ -9,8 +9,7 @@ def calculate_fuel_required(
     distance_miles,
 ):
     """
-    Calculate the total gallons required
-    to drive the given distance.
+    Calculate total fuel required for the route.
     """
 
     if distance_miles < 0:
@@ -53,8 +52,8 @@ def calculate_stop_distance(
     station_distance,
 ):
     """
-    Calculate distance between the previous
-    route position and a fuel station.
+    Calculate distance from the previous
+    route position to a station.
     """
 
     distance = (
@@ -71,62 +70,12 @@ def calculate_stop_distance(
     return distance
 
 
-def find_next_cheaper_station(
-    current_index,
-    stations,
-    current_price,
-    current_distance,
-):
-    """
-    Find the first cheaper station ahead that
-    can be reached within the vehicle's maximum
-    500-mile range.
-
-    Returns the station index or None.
-    """
-
-    for index in range(
-        current_index + 1,
-        len(stations),
-    ):
-
-        station = stations[index]
-
-        station_distance = float(
-            station[
-                "distance_from_start"
-            ]
-        )
-
-        distance = (
-            station_distance
-            - current_distance
-        )
-
-        # Stations beyond the maximum tank range
-        # cannot be considered as the next cheaper
-        # station.
-        if distance > MAX_RANGE_MILES:
-            break
-
-        price = float(
-            station[
-                "price_per_gallon"
-            ]
-        )
-
-        if price < current_price:
-            return index
-
-    return None
-
-
 def prepare_stations(
     route_distance,
     candidate_stations,
 ):
     """
-    Clean, validate and sort candidate stations.
+    Clean and sort fuel stations.
     """
 
     stations = []
@@ -146,7 +95,6 @@ def prepare_stations(
             continue
 
         try:
-
             distance = float(
                 station[
                     "distance_from_start"
@@ -163,7 +111,6 @@ def prepare_stations(
             TypeError,
             ValueError,
         ):
-
             continue
 
         if distance < 0:
@@ -202,8 +149,7 @@ def prepare_stations(
         )
     )
 
-    # Remove stations that have essentially
-    # the same route position.
+    # Remove duplicate route positions.
     unique_stations = []
 
     seen_positions = set()
@@ -214,7 +160,7 @@ def prepare_stations(
             station[
                 "distance_from_start"
             ],
-            4,
+            2,
         )
 
         if position in seen_positions:
@@ -229,6 +175,132 @@ def prepare_stations(
         )
 
     return unique_stations
+
+
+def find_best_reachable_station(
+    stations,
+    current_distance,
+    available_range,
+    start_index=0,
+):
+    """
+    Find the cheapest reachable station ahead.
+
+    If multiple stations have the same price,
+    prefer the station farther along the route.
+    """
+
+    reachable_stations = []
+
+    max_reachable_distance = (
+        current_distance
+        + available_range
+    )
+
+    for index in range(
+        start_index,
+        len(stations),
+    ):
+
+        station = stations[index]
+
+        station_distance = float(
+            station[
+                "distance_from_start"
+            ]
+        )
+
+        # Station is behind us.
+        if station_distance <= current_distance:
+            continue
+
+        # Station cannot be reached.
+        if (
+            station_distance
+            > max_reachable_distance
+        ):
+            break
+
+        reachable_stations.append(
+            (
+                index,
+                station,
+            )
+        )
+
+    if not reachable_stations:
+        return None
+
+    # Cheapest station first.
+    #
+    # If prices are equal, select the station
+    # farther along the route.
+    reachable_stations.sort(
+        key=lambda item: (
+            float(
+                item[1][
+                    "price_per_gallon"
+                ]
+            ),
+            -float(
+                item[1][
+                    "distance_from_start"
+                ]
+            ),
+        )
+    )
+
+    return reachable_stations[0]
+
+
+def find_next_cheaper_station(
+    current_index,
+    stations,
+    current_price,
+    current_distance,
+    current_fuel,
+):
+    """
+    Find the first cheaper station that can
+    be reached with the fuel currently available.
+    """
+
+    available_range = (
+        current_fuel
+        * FUEL_EFFICIENCY_MPG
+    )
+
+    max_reachable_distance = (
+        current_distance
+        + available_range
+    )
+
+    for index in range(
+        current_index + 1,
+        len(stations),
+    ):
+
+        station = stations[index]
+
+        station_distance = float(
+            station[
+                "distance_from_start"
+            ]
+        )
+
+        if station_distance > max_reachable_distance:
+            break
+
+        station_price = float(
+            station[
+                "price_per_gallon"
+            ]
+        )
+
+        if station_price < current_price:
+            return index
+
+    return None
 
 
 def select_fuel_stops(
@@ -247,13 +319,15 @@ def select_fuel_stops(
 
     The vehicle starts with 50 gallons.
 
-    The algorithm tries to:
+    The algorithm:
 
-        1. Avoid unnecessary fuel purchases.
-        2. Buy enough fuel to reach a cheaper station
-           when one exists within 500 miles.
-        3. Otherwise buy enough fuel to safely reach
-           the next 500-mile range or destination.
+        1. Uses the initial full tank first.
+        2. Stops only when another fuel purchase
+           is required.
+        3. Looks at all reachable stations.
+        4. Prefers cheaper stations.
+        5. Buys only enough fuel needed to
+           continue efficiently.
     """
 
     if route_distance < 0:
@@ -270,72 +344,35 @@ def select_fuel_stops(
     )
 
     # --------------------------------------------------
-    # Routes <= 500 miles
+    # Route can be completed with starting tank.
     # --------------------------------------------------
-    #
-    # The vehicle starts with a full 50-gallon tank,
-    # so no additional fuel purchase is required.
-    #
-    if route_distance <= MAX_RANGE_MILES:
 
+    if route_distance <= MAX_RANGE_MILES:
         return []
 
-    # --------------------------------------------------
-    # A long route requires fuel stations.
-    # --------------------------------------------------
-
     if not stations:
-
         raise ValueError(
             "No fuel stations are available "
             "near this route."
         )
 
     # --------------------------------------------------
-    # The first station must be reachable with
-    # the starting full tank.
-    # --------------------------------------------------
-
-    first_station_distance = float(
-        stations[0][
-            "distance_from_start"
-        ]
-    )
-
-    if (
-        first_station_distance
-        > MAX_RANGE_MILES
-    ):
-
-        raise ValueError(
-            "No fuel station is reachable within "
-            "the vehicle's 500-mile range from "
-            "the starting point."
-        )
-
-    # --------------------------------------------------
-    # Initial vehicle state
+    # Initial state.
     # --------------------------------------------------
 
     current_distance = 0.0
 
-    # Vehicle starts with a full tank.
     current_fuel = MAX_FUEL_GALLONS
 
-    station_index = 0
+    current_station_index = -1
 
     selected_stops = []
 
     # --------------------------------------------------
-    # Main optimization loop
+    # Main optimization loop.
     # --------------------------------------------------
 
     while current_distance < route_distance:
-
-        # ----------------------------------------------
-        # Can we reach the destination with the
-        # fuel currently in the tank?
-        # ----------------------------------------------
 
         remaining_distance = (
             route_distance
@@ -347,19 +384,23 @@ def select_fuel_stops(
             * FUEL_EFFICIENCY_MPG
         )
 
+        # Destination is reachable.
         if remaining_distance <= available_range:
-
             break
 
-        # ----------------------------------------------
-        # Find the next station reachable with the
-        # fuel currently in the tank.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Find every station reachable with current fuel.
+        # --------------------------------------------------
 
-        reachable_index = None
+        reachable = []
+
+        max_reachable_distance = (
+            current_distance
+            + available_range
+        )
 
         for index in range(
-            station_index,
+            current_station_index + 1,
             len(stations),
         ):
 
@@ -371,41 +412,60 @@ def select_fuel_stops(
                 ]
             )
 
-            distance_to_station = (
-                station_distance
-                - current_distance
-            )
-
-            if distance_to_station < 0:
+            if station_distance <= current_distance:
                 continue
 
             if (
-                distance_to_station
-                <= available_range
+                station_distance
+                > max_reachable_distance
             ):
-
-                reachable_index = index
                 break
 
-            # Stations are sorted by distance,
-            # so once one is too far, later ones
-            # will also be too far.
-            break
-
-        # ----------------------------------------------
-        # No reachable station
-        # ----------------------------------------------
-
-        if reachable_index is None:
-
-            raise ValueError(
-                "No fuel station is reachable within "
-                "the vehicle's available fuel range."
+            reachable.append(
+                (
+                    index,
+                    station,
+                )
             )
 
-        station = stations[
-            reachable_index
-        ]
+        # --------------------------------------------------
+        # No reachable station.
+        # --------------------------------------------------
+
+        if not reachable:
+            raise ValueError(
+                "No fuel station is reachable within "
+                "the vehicle's available fuel range. "
+                "The route does not have enough "
+                "usable fuel-station coverage."
+            )
+
+        # --------------------------------------------------
+        # Select a station.
+        #
+        # We choose the cheapest reachable station.
+        # If prices are equal, choose the one farther
+        # along the route.
+        # --------------------------------------------------
+
+        reachable.sort(
+            key=lambda item: (
+                float(
+                    item[1][
+                        "price_per_gallon"
+                    ]
+                ),
+                -float(
+                    item[1][
+                        "distance_from_start"
+                    ]
+                ),
+            )
+        )
+
+        station_index, station = (
+            reachable[0]
+        )
 
         station_distance = float(
             station[
@@ -413,9 +473,15 @@ def select_fuel_stops(
             ]
         )
 
-        # ----------------------------------------------
-        # Drive from current position to station.
-        # ----------------------------------------------
+        station_price = float(
+            station[
+                "price_per_gallon"
+            ]
+        )
+
+        # --------------------------------------------------
+        # Drive to selected station.
+        # --------------------------------------------------
 
         distance_to_station = (
             station_distance
@@ -436,19 +502,13 @@ def select_fuel_stops(
             station_distance
         )
 
-        station_index = (
-            reachable_index + 1
+        current_station_index = (
+            station_index
         )
 
-        current_price = float(
-            station[
-                "price_per_gallon"
-            ]
-        )
-
-        # ----------------------------------------------
-        # Check destination again.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Check if destination is now reachable.
+        # --------------------------------------------------
 
         remaining_distance = (
             route_distance
@@ -461,29 +521,23 @@ def select_fuel_stops(
         )
 
         if remaining_distance <= available_range:
-
             break
 
-        # ----------------------------------------------
-        # Find a cheaper station ahead.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Determine how much fuel to buy.
+        # --------------------------------------------------
 
+        # Find a cheaper station ahead that can
+        # be reached with a full tank.
         cheaper_index = (
             find_next_cheaper_station(
-                current_index=(
-                    reachable_index
-                ),
+                current_index=station_index,
                 stations=stations,
-                current_price=current_price,
-                current_distance=(
-                    current_distance
-                ),
+                current_price=station_price,
+                current_distance=current_distance,
+                current_fuel=current_fuel,
             )
         )
-
-        # ----------------------------------------------
-        # Decide how much fuel to purchase.
-        # ----------------------------------------------
 
         if cheaper_index is not None:
 
@@ -499,14 +553,13 @@ def select_fuel_stops(
 
         else:
 
-            # No cheaper station within 500 miles.
+            # No cheaper station nearby.
             #
             # Fill enough to reach either:
             #
-            #   1. Destination
-            #   2. Maximum 500-mile range
+            #   - destination
+            #   - maximum 500-mile range
             #
-
             target_distance = min(
                 route_distance,
                 current_distance
@@ -523,7 +576,6 @@ def select_fuel_stops(
             / FUEL_EFFICIENCY_MPG
         )
 
-        # We only buy the amount we are missing.
         fuel_to_buy = (
             fuel_needed
             - current_fuel
@@ -543,15 +595,18 @@ def select_fuel_stops(
             available_capacity,
         )
 
-        # ----------------------------------------------
-        # Safety check.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # If fuel is still insufficient,
+        # fill the tank.
+        # --------------------------------------------------
 
         if (
-            current_fuel
-            + fuel_to_buy
-        ) * FUEL_EFFICIENCY_MPG < (
-            distance_needed
+            (
+                current_fuel
+                + fuel_to_buy
+            )
+            * FUEL_EFFICIENCY_MPG
+            < distance_needed
         ):
 
             fuel_to_buy = (
@@ -559,9 +614,9 @@ def select_fuel_stops(
                 - current_fuel
             )
 
-        # ----------------------------------------------
-        # Record fuel purchase.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Record purchase.
+        # --------------------------------------------------
 
         if fuel_to_buy > 0:
 
@@ -580,7 +635,7 @@ def select_fuel_stops(
                 "fuel_cost"
             ] = round(
                 fuel_to_buy
-                * current_price,
+                * station_price,
                 2,
             )
 
@@ -592,9 +647,9 @@ def select_fuel_stops(
                 fuel_to_buy
             )
 
-        # ----------------------------------------------
-        # Final safety check.
-        # ----------------------------------------------
+        # --------------------------------------------------
+        # Safety check.
+        # --------------------------------------------------
 
         if current_fuel <= 0:
 
@@ -604,7 +659,7 @@ def select_fuel_stops(
             )
 
     # --------------------------------------------------
-    # Final destination validation
+    # Final destination validation.
     # --------------------------------------------------
 
     remaining_distance = (
@@ -618,7 +673,6 @@ def select_fuel_stops(
     )
 
     if remaining_distance > available_range:
-
         raise ValueError(
             "The selected fuel stops cannot "
             "complete the route within the "
@@ -633,12 +687,14 @@ def calculate_total_cost(
     fuel_stops,
 ):
     """
-    Calculate total fuel required and total money
-    spent on additional fuel purchases.
+    Calculate:
+
+        - total fuel required
+        - total additional fuel purchased
+        - total money spent on fuel purchases
     """
 
     if route_distance < 0:
-
         raise ValueError(
             "Route distance cannot be negative."
         )
@@ -668,13 +724,11 @@ def calculate_total_cost(
         )
 
         if gallons < 0:
-
             raise ValueError(
                 "Fuel purchased cannot be negative."
             )
 
         if price < 0:
-
             raise ValueError(
                 "Fuel price cannot be negative."
             )
