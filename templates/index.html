@@ -1,0 +1,259 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        Fuel Route Optimizer
+    </title>
+
+    <!-- Leaflet CSS -->
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    >
+
+    <!-- Custom CSS -->
+    <link
+        rel="stylesheet"
+        href="{% static 'css/style.css' %}"
+    >
+</head>
+
+<body>
+
+    <header class="header">
+        <div class="container">
+            <h1>Fuel Route Optimizer</h1>
+
+            <p>
+                Find a cost-effective driving route
+                with recommended fuel stops.
+            </p>
+        </div>
+    </header>
+
+
+    <main class="container">
+
+        <!-- Search Card -->
+        <section class="card search-card">
+
+            <h2>Plan Your Route</h2>
+
+            <form id="route-form">
+
+                <div class="form-grid">
+
+                    <div class="form-group">
+                        <label for="start">
+                            Start Location
+                        </label>
+
+                        <input
+                            type="text"
+                            id="start"
+                            name="start"
+                            placeholder="e.g. New York, NY"
+                            required
+                        >
+                    </div>
+
+
+                    <div class="form-group">
+                        <label for="finish">
+                            Finish Location
+                        </label>
+
+                        <input
+                            type="text"
+                            id="finish"
+                            name="finish"
+                            placeholder="e.g. Chicago, IL"
+                            required
+                        >
+                    </div>
+
+                </div>
+
+
+                <button
+                    type="submit"
+                    id="optimize-button"
+                    class="primary-button"
+                >
+                    Optimize Route
+                </button>
+
+            </form>
+
+
+            <!-- Loading -->
+            <div
+                id="loading"
+                class="loading hidden"
+            >
+                <div class="spinner"></div>
+
+                <p>
+                    Calculating your route...
+                </p>
+            </div>
+
+
+            <!-- Error -->
+            <div
+                id="error-message"
+                class="error-message hidden"
+            ></div>
+
+        </section>
+
+
+        <!-- Results -->
+        <section
+            id="results"
+            class="hidden"
+        >
+
+            <!-- Summary -->
+            <div class="card">
+
+                <h2>Route Summary</h2>
+
+                <div class="summary-grid">
+
+                    <div class="summary-item">
+                        <span class="summary-label">
+                            Distance
+                        </span>
+
+                        <strong id="distance">
+                            -
+                        </strong>
+                    </div>
+
+
+                    <div class="summary-item">
+                        <span class="summary-label">
+                            Duration
+                        </span>
+
+                        <strong id="duration">
+                            -
+                        </strong>
+                    </div>
+
+
+                    <div class="summary-item">
+                        <span class="summary-label">
+                            Fuel Required
+                        </span>
+
+                        <strong id="fuel">
+                            -
+                        </strong>
+                    </div>
+
+
+                    <div class="summary-item">
+                        <span class="summary-label">
+                            Estimated Fuel Cost
+                        </span>
+
+                        <strong id="total-cost">
+                            -
+                        </strong>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- Map -->
+            <div class="card">
+
+                <h2>Route Map</h2>
+
+                <div
+                    id="map"
+                    class="map"
+                ></div>
+
+            </div>
+
+
+            <!-- Fuel Stops -->
+            <div class="card">
+
+                <div class="section-header">
+
+                    <div>
+                        <h2>Recommended Fuel Stops</h2>
+
+                        <p class="section-description">
+                            Cost-effective stations selected
+                            for your journey.
+                        </p>
+                    </div>
+
+                    <span
+                        id="stop-count"
+                        class="stop-count"
+                    >
+                        0 stops
+                    </span>
+
+                </div>
+
+
+                <div
+                    id="fuel-stops"
+                    class="fuel-stops"
+                ></div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <footer class="footer">
+
+        <div class="container">
+
+            <p>
+                Fuel Route Optimizer
+            </p>
+
+            <p>
+                Routing powered by OpenStreetMap and OSRM.
+            </p>
+
+        </div>
+
+    </footer>
+
+
+    <!-- Leaflet JS -->
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    ></script>
+
+
+    <!-- Custom JS -->
+    <script
+        src="{% static 'js/app.js' %}"
+    ></script>
+
+</body>
+</html>
