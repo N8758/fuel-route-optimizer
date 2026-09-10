@@ -20,14 +20,18 @@ BATCH_SIZE = 1000
 
 REQUEST_TIMEOUT = 120
 
+PAUSE_BETWEEN_REQUESTS = 1
+
 
 class Command(BaseCommand):
+
     help = (
-        "Geocode fuel station addresses using the "
-        "U.S. Census Geocoder batch API."
+        "Geocode fuel station addresses using "
+        "the U.S. Census Geocoder batch API."
     )
 
     def add_arguments(self, parser):
+
         parser.add_argument(
             "--batch-size",
             type=int,
@@ -49,26 +53,34 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+
         batch_size = options["batch_size"]
+
         force = options["force"]
 
         if batch_size <= 0:
+
             self.stdout.write(
                 self.style.ERROR(
                     "Batch size must be greater than zero."
                 )
             )
+
             return
 
         # --------------------------------------------------
-        # 1. Get stations that need geocoding
+        # 1. Get stations
         # --------------------------------------------------
 
         if force:
+
             stations = list(
-                FuelStation.objects.all().order_by("id")
+                FuelStation.objects.all()
+                .order_by("id")
             )
+
         else:
+
             stations = list(
                 FuelStation.objects.filter(
                     latitude__isnull=True
@@ -78,11 +90,13 @@ class Command(BaseCommand):
         total_stations = len(stations)
 
         if total_stations == 0:
+
             self.stdout.write(
                 self.style.SUCCESS(
                     "No fuel stations need geocoding."
                 )
             )
+
             return
 
         self.stdout.write(
@@ -92,25 +106,29 @@ class Command(BaseCommand):
             )
         )
 
-        # --------------------------------------------------
-        # 2. Counters
-        # --------------------------------------------------
-
         successful = 0
+
         failed = 0
 
         # --------------------------------------------------
-        # 3. Calculate number of batches
+        # 2. First pass
+        #
+        # Try the original station address.
         # --------------------------------------------------
+
+        self.stdout.write("")
+        self.stdout.write(
+            self.style.NOTICE(
+                "PASS 1: Trying exact station addresses..."
+            )
+        )
+
+        failed_stations = []
 
         total_batches = (
             (total_stations + batch_size - 1)
             // batch_size
         )
-
-        # --------------------------------------------------
-        # 4. Process batches
-        # --------------------------------------------------
 
         for batch_number, start_index in enumerate(
             range(
@@ -120,11 +138,12 @@ class Command(BaseCommand):
             ),
             start=1,
         ):
+
             batch = stations[
-                start_index:start_index + batch_size
+                start_index:
+                start_index + batch_size
             ]
 
-            self.stdout.write("")
             self.stdout.write(
                 self.style.NOTICE(
                     f"Processing batch "
@@ -134,39 +153,44 @@ class Command(BaseCommand):
             )
 
             try:
+
                 results = self.geocode_batch(
-                    batch
+                    batch,
+                    fallback=False,
                 )
 
             except requests.RequestException as error:
+
                 self.stdout.write(
                     self.style.ERROR(
-                        "Census Geocoder request failed: "
+                        "Census request failed: "
                         f"{error}"
                     )
                 )
 
-                failed += len(batch)
+                failed_stations.extend(
+                    batch
+                )
 
                 continue
 
             except Exception as error:
+
                 self.stdout.write(
                     self.style.ERROR(
-                        "Unexpected error while processing "
-                        f"batch {batch_number}: {error}"
+                        "Unexpected error: "
+                        f"{error}"
                     )
                 )
 
-                failed += len(batch)
+                failed_stations.extend(
+                    batch
+                )
 
                 continue
 
-            # --------------------------------------------------
-            # 5. Save coordinates
-            # --------------------------------------------------
-
             batch_successful = 0
+
             batch_failed = 0
 
             for station in batch:
@@ -176,62 +200,214 @@ class Command(BaseCommand):
                 )
 
                 if not result:
+
+                    failed_stations.append(
+                        station
+                    )
+
                     batch_failed += 1
-                    failed += 1
+
                     continue
 
-                latitude = result["latitude"]
-                longitude = result["longitude"]
+                if self.save_coordinates(
+                    station,
+                    result,
+                ):
 
-                try:
-                    station.latitude = latitude
-                    station.longitude = longitude
-
-                    station.save(
-                        update_fields=[
-                            "latitude",
-                            "longitude",
-                            "updated_at",
-                        ]
-                    )
-
-                    batch_successful += 1
                     successful += 1
 
-                except Exception as error:
-                    batch_failed += 1
-                    failed += 1
+                    batch_successful += 1
 
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"Could not save coordinates "
-                            f"for station {station.id}: "
-                            f"{error}"
-                        )
+                else:
+
+                    failed_stations.append(
+                        station
                     )
+
+                    batch_failed += 1
 
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Batch {batch_number} complete: "
                     f"{batch_successful} geocoded, "
-                    f"{batch_failed} failed."
+                    f"{batch_failed} need fallback."
                 )
             )
 
-            # Small pause between requests.
-            if (
-                start_index + batch_size
-                < total_stations
+            time.sleep(
+                PAUSE_BETWEEN_REQUESTS
+            )
+
+        # --------------------------------------------------
+        # 3. Second pass
+        #
+        # For failed highway-style addresses,
+        # try City + State.
+        # --------------------------------------------------
+
+        fallback_successful = 0
+
+        if failed_stations:
+
+            self.stdout.write("")
+            self.stdout.write(
+                self.style.NOTICE(
+                    "PASS 2: Trying City + State fallback "
+                    "for failed stations..."
+                )
+            )
+
+            fallback_total = len(
+                failed_stations
+            )
+
+            fallback_batches = (
+                (
+                    fallback_total
+                    + batch_size
+                    - 1
+                )
+                // batch_size
+            )
+
+            still_failed = []
+
+            for batch_number, start_index in enumerate(
+                range(
+                    0,
+                    fallback_total,
+                    batch_size,
+                ),
+                start=1,
             ):
-                time.sleep(1)
+
+                batch = failed_stations[
+                    start_index:
+                    start_index + batch_size
+                ]
+
+                self.stdout.write(
+                    self.style.NOTICE(
+                        f"Fallback batch "
+                        f"{batch_number}/"
+                        f"{fallback_batches} "
+                        f"({len(batch)} stations)..."
+                    )
+                )
+
+                try:
+
+                    results = self.geocode_batch(
+                        batch,
+                        fallback=True,
+                    )
+
+                except requests.RequestException as error:
+
+                    self.stdout.write(
+                        self.style.ERROR(
+                            "Fallback Census request failed: "
+                            f"{error}"
+                        )
+                    )
+
+                    still_failed.extend(
+                        batch
+                    )
+
+                    continue
+
+                except Exception as error:
+
+                    self.stdout.write(
+                        self.style.ERROR(
+                            "Unexpected fallback error: "
+                            f"{error}"
+                        )
+                    )
+
+                    still_failed.extend(
+                        batch
+                    )
+
+                    continue
+
+                batch_successful = 0
+
+                batch_failed = 0
+
+                for station in batch:
+
+                    result = results.get(
+                        str(station.id)
+                    )
+
+                    if not result:
+
+                        still_failed.append(
+                            station
+                        )
+
+                        batch_failed += 1
+
+                        continue
+
+                    if self.save_coordinates(
+                        station,
+                        result,
+                    ):
+
+                        successful += 1
+
+                        fallback_successful += 1
+
+                        batch_successful += 1
+
+                    else:
+
+                        still_failed.append(
+                            station
+                        )
+
+                        batch_failed += 1
+
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"Fallback batch "
+                        f"{batch_number} complete: "
+                        f"{batch_successful} geocoded, "
+                        f"{batch_failed} failed."
+                    )
+                )
+
+                time.sleep(
+                    PAUSE_BETWEEN_REQUESTS
+                )
+
+            failed = len(
+                still_failed
+            )
+
+        else:
+
+            failed = 0
 
         # --------------------------------------------------
-        # 6. Final summary
+        # 4. Final summary
         # --------------------------------------------------
 
-        remaining = FuelStation.objects.filter(
-            latitude__isnull=True
-        ).count()
+        remaining = (
+            FuelStation.objects.filter(
+                latitude__isnull=True
+            ).count()
+        )
+
+        total_with_coordinates = (
+            FuelStation.objects.filter(
+                latitude__isnull=False,
+                longitude__isnull=False,
+            ).count()
+        )
 
         self.stdout.write("")
         self.stdout.write(
@@ -241,33 +417,56 @@ class Command(BaseCommand):
         )
 
         self.stdout.write(
-            f"Successfully geocoded: {successful}"
+            f"Exact address matches: "
+            f"{successful - fallback_successful}"
         )
 
         self.stdout.write(
-            f"Failed/no match: {failed}"
+            f"City/state fallback matches: "
+            f"{fallback_successful}"
         )
 
         self.stdout.write(
-            f"Still without coordinates: {remaining}"
+            f"Total newly geocoded: "
+            f"{successful}"
+        )
+
+        self.stdout.write(
+            f"Still without coordinates: "
+            f"{remaining}"
+        )
+
+        self.stdout.write(
+            f"Total stations with coordinates: "
+            f"{total_with_coordinates}"
         )
 
     # ======================================================
     # Census batch request
     # ======================================================
 
-    def geocode_batch(self, stations):
+    def geocode_batch(
+        self,
+        stations,
+        fallback=False,
+    ):
         """
-        Send one batch of fuel station addresses
-        to the U.S. Census Geocoder.
+        Send a batch of addresses to Census.
 
-        Input format:
+        Normal mode:
+            Uses station address + city + state.
 
-            Unique ID,
-            Street address,
-            City,
-            State,
-            ZIP
+        Fallback mode:
+            Uses city + state only.
+
+        The fallback is useful for CSV addresses such as:
+
+            I-10, EXIT 858
+            I-20, EXIT 235
+            SR-375
+
+        where the Census address matcher may not
+        understand the highway/exit description.
         """
 
         csv_buffer = io.StringIO(
@@ -280,10 +479,6 @@ class Command(BaseCommand):
 
         for station in stations:
 
-            street_address = (
-                station.address or ""
-            ).strip()
-
             city = (
                 station.city or ""
             ).strip()
@@ -292,21 +487,45 @@ class Command(BaseCommand):
                 station.state or ""
             ).strip()
 
-            # ZIP is not available as a separate
-            # column in the assessment CSV.
+            if fallback:
+
+                # --------------------------------------------------
+                # City/state fallback
+                #
+                # Put the city in the street field and
+                # leave the city field empty.
+                #
+                # This lets Census interpret the input
+                # as a city/state location.
+                # --------------------------------------------------
+
+                street_address = city
+
+                census_city = ""
+
+            else:
+
+                street_address = (
+                    station.address or ""
+                ).strip()
+
+                census_city = city
+
             zip_code = ""
 
             writer.writerow(
                 [
                     station.id,
                     street_address,
-                    city,
+                    census_city,
                     state,
                     zip_code,
                 ]
             )
 
-        csv_data = csv_buffer.getvalue()
+        csv_data = (
+            csv_buffer.getvalue()
+        )
 
         files = {
             "addressFile": (
@@ -320,10 +539,6 @@ class Command(BaseCommand):
             "benchmark": CENSUS_BENCHMARK,
         }
 
-        self.stdout.write(
-            "Sending addresses to Census Geocoder..."
-        )
-
         response = requests.post(
             CENSUS_GEOCODER_URL,
             files=files,
@@ -334,8 +549,10 @@ class Command(BaseCommand):
         response.raise_for_status()
 
         if not response.text.strip():
+
             raise requests.RequestException(
-                "Census Geocoder returned an empty response."
+                "Census Geocoder returned "
+                "an empty response."
             )
 
         return self.parse_response(
@@ -346,44 +563,24 @@ class Command(BaseCommand):
     # Parse Census response
     # ======================================================
 
-    def parse_response(self, response_text):
+    def parse_response(
+        self,
+        response_text,
+    ):
         """
-        Parse the Census batch response.
+        Parse Census batch response.
 
-        Successful Census response looks approximately
-        like this:
+        Coordinates are in column 5:
 
-        ID,
-        Input Address,
-        Match,
-        Match Type,
-        Output Address,
-        "Longitude,Latitude",
-        TigerLine ID,
-        Side,
-        State,
-        County,
-        Tract,
-        Block
-
-        Example:
-
-        "1",
-        "123 MAIN ST, AUSTIN, TX",
-        "Match",
-        "Exact",
-        "123 MAIN ST, AUSTIN, TX",
-        "-97.7431,30.2672",
-        ...
-
-        Important:
-        Longitude and latitude are together in column 5.
+            Longitude,Latitude
         """
 
         results = {}
 
         reader = csv.reader(
-            io.StringIO(response_text)
+            io.StringIO(
+                response_text
+            )
         )
 
         for row in reader:
@@ -391,15 +588,12 @@ class Command(BaseCommand):
             if not row:
                 continue
 
-            # --------------------------------------------------
-            # A successful response normally has at least
-            # 6 columns.
-            # --------------------------------------------------
-
             if len(row) < 6:
                 continue
 
-            record_id = row[0].strip()
+            record_id = (
+                row[0].strip()
+            )
 
             if not record_id:
                 continue
@@ -410,39 +604,39 @@ class Command(BaseCommand):
                 else ""
             )
 
-            # --------------------------------------------------
-            # No match
-            # --------------------------------------------------
-
             if not match:
                 continue
 
-            if match.lower() == "no_match":
+            if (
+                match.lower()
+                in {
+                    "no_match",
+                    "tie",
+                }
+            ):
                 continue
 
-            if match.lower() == "tie":
-                continue
-
-            # --------------------------------------------------
-            # Coordinates are in ONE column:
-            #
-            # "-76.9274,38.8460"
-            # --------------------------------------------------
-
-            coordinates = row[5].strip()
+            coordinates = (
+                row[5].strip()
+            )
 
             if not coordinates:
                 continue
 
             coordinate_parts = [
                 value.strip()
-                for value in coordinates.split(",")
+                for value in coordinates.split(
+                    ","
+                )
             ]
 
-            if len(coordinate_parts) != 2:
+            if len(
+                coordinate_parts
+            ) != 2:
                 continue
 
             try:
+
                 longitude = float(
                     coordinate_parts[0]
                 )
@@ -457,23 +651,70 @@ class Command(BaseCommand):
             ):
                 continue
 
-            # --------------------------------------------------
-            # Validate coordinates
-            # --------------------------------------------------
-
             if not (
-                -90 <= latitude <= 90
+                -90
+                <= latitude
+                <= 90
             ):
                 continue
 
             if not (
-                -180 <= longitude <= 180
+                -180
+                <= longitude
+                <= 180
             ):
                 continue
 
-            results[record_id] = {
+            results[
+                record_id
+            ] = {
                 "latitude": latitude,
                 "longitude": longitude,
             }
 
         return results
+
+    # ======================================================
+    # Save coordinates
+    # ======================================================
+
+    def save_coordinates(
+        self,
+        station,
+        result,
+    ):
+        """
+        Save latitude and longitude.
+        """
+
+        try:
+
+            station.latitude = (
+                result["latitude"]
+            )
+
+            station.longitude = (
+                result["longitude"]
+            )
+
+            station.save(
+                update_fields=[
+                    "latitude",
+                    "longitude",
+                    "updated_at",
+                ]
+            )
+
+            return True
+
+        except Exception as error:
+
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Could not save coordinates "
+                    f"for station {station.id}: "
+                    f"{error}"
+                )
+            )
+
+            return False
